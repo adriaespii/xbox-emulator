@@ -1100,11 +1100,11 @@ Headless runs straight into each title's test scene, on the staged release of 11
 
 ## RTS0 root-constant user SGPRs on the static Scarlett path (tombox-xshader, all titles) - 2026-11-22, steward from #158
 
-### 🟨 User SGPRs mapped to an RTS0 root Constants parameter are never initialised
+### 🟨 User SGPRs mapped to an RTS0 root Constants parameter are never initialised - FIXED
 - **Seen:** reported with a repro in PR #158. On the static Scarlett path (not Durango, not root-memory), a pixel shader whose RTS0 has `[Constants num32=4]` and reads s8 is translated to `uint s8 = 0u;`. The SGPR is declared but never loaded from the root constants.
-- **Cause (per the report, not yet traced in code):** the static user-SGPR setup has no load for a root Constants parameter, so those SGPRs keep the zero they were declared with.
-- **Done:** gap recorded and passed to the GPU owner. An offline check of the Trackmania hang shaders (PS f861c56a34758d84, VS 5cba0860bcfa69b1) found that neither reads a zero-initialised root-constant SGPR, because their root constants come through the tb_rcN cbuffers. So this gap is not the cause of that hang.
-- **Missing:** map each root Constants parameter's 32-bit values onto its user SGPRs (bind the parameter as a cbuffer/root constants in the translated root signature and load s<n> from it). Add a synthetic test that reads s8 under `[Constants num32=4]` and expects the bound value instead of 0.
+- **Cause:** the static user-SGPR setup did not load from root Constants parameters, leaving those user SGPRs with default zero initialization.
+- **Done:** mapped each root Constants parameter's 32-bit values onto its user SGPRs (tb_rcN cbuffers loaded into s<n> at entry) on the static Scarlett path in tombox-xshader. Verified with synthetic WARP tests for single and multi-parameter root layouts.
+- **Offline check:** the Trackmania hang shaders (PS f861c56a34758d84, VS 5cba0860bcfa69b1) do not read zero-initialised root-constant SGPRs because their root constants come through the tb_rcN cbuffers directly.
 
 ### Minecraft menu: 2026-11-22 11:20, black menu FIXED (TOMBOX_CBRAW=1)
 - Root cause: the title binds root CBVs at addresses that are only 16-byte aligned (for example, the UI VS b0 at 0x1e208850). On the NVIDIA RTX 5060 the VS then reads the wrong constants. The UI text and panels became huge or offscreen triangles, so #005 stayed empty and the menu was black.

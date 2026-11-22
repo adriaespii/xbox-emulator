@@ -150,7 +150,7 @@ impl<'a> Emitter<'a> {
         Ok(true)
     }
 
-    pub(super) fn finish_mesh(&mut self, mut h: String) -> Result<String, String> {
+    pub(super) fn finish_mesh(&mut self, mut h: String, static_init: &str) -> Result<String, String> {
         let m = self.mesh_info()?;
         let n = self.ms_threads()?;
         if m.prim_vectors != 0 {
@@ -229,6 +229,7 @@ impl<'a> Emitter<'a> {
         }
         let _ = writeln!(h, "{}", self.reg_decls());
         h.push_str(&self.ud_init());
+        h.push_str(static_init);
         let w = wave_size(&self.insns);
         let _ = writeln!(h, "    SOut o = (SOut)0; uint tb_prim = 0u;");
         if local_counts {
