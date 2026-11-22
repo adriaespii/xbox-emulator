@@ -321,11 +321,11 @@ elease`, the log shows one install and every interface is emulated.
   - MRTZ export with only SV_Coverage / SV_StencilRef in the signature (x enabled as the hardware workaround) now writes coverage from z and stencil from y (`hlsl.rs`, shader 65f8654fb680e6b2).
   - `v_movrel*` lowered to switches over scalar VGPRs instead of a `uint tb_v[256]` array: DXC on e4db32f6038a003b 3.7 s -> 2.8 s (GVN on the array was 1 s).
   - Offline pack fill after every build (`tools/dev/fill_pack.ps1`), with the cbv_raw HLSL rewrite now shared with xshader_corpus (`tombox-xshader/src/cbv_raw_hlsl.rs`) so offline keys match Trackmania at runtime.
+  - Translate failures fixed: position export 13 without SV_ClipDistance/SV_CullDistance ignored like unconsumed exports (`hlsl.rs`, shader 278d1ef397725c4e), and unmapped PS attributes fall back to standard defaults (0, 0, 0, 1) instead of refusing translation (`hlsl.rs`, shader ba37366c685cb01e).
 - **Open:**
   - 139 s freeze after START in run 022022 with no shader or PSO work and no pad reads; title online through the in-process backend, periodic wss://rta.xboxlive.com token requests, no RTA socket opened. Cause not found yet (stack sampling next run).
   - DEVICE_HUNG 0x887a0006 at +325 s in run 022022 (seen in CreateGraphicsPipelineState), after 300-1900 ms driver PSO compiles.
   - MUBUF addr64 (`gcn.rs` ~384) refused: VS c1d89c9cab39d66a (podium car), a0dd999eefb77fc0, e2b9bc1399d37552. Plan: pseudo-op into the hlsl/global.rs tb_gva path.
-  - Translate failures: 278d1ef397725c4e (position export 13 without SV_ClipDistance/SV_CullDistance), ba37366c685cb01e (PS attr0 has no signature register).
   - Big Trackmania PS (4-8k HLSL lines) still take 1.6-3 s in DXC and 0.4-1.9 s in the driver; the pack removes only the DXC part on later runs.
   - Driver PSO compile is not cached by us (no ID3D12PipelineLibrary).
 

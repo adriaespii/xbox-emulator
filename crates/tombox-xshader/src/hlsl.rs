@@ -4021,21 +4021,19 @@ impl<'a> Emitter<'a> {
                 }
                 let attr = ins.aux.imm as usize;
                 let chan = ins.aux.imm2 as usize;
-                let (reg, layer) = match self.ps_attrs.get(attr) {
-                    Some(r) => (*r, false),
-                    None => (
-                        *distinct_regs(self.ex.input_sig.iter().filter(|e| matches!(e.sysval, 4 | 5) && e.rw_mask != 0))
-                            .get(attr - self.ps_attrs.len())
-                            .ok_or_else(|| format!("PS attr{attr} has no signature register"))?,
-                        true,
-                    ),
-                };
-                let found = if layer {
-                    self.ex.input_sig.iter().enumerate().find_map(|(ei, e)| {
-                        (matches!(e.sysval, 4 | 5) && e.register == reg && (e.mask >> chan) & 1 != 0).then(|| (ei, (e.mask & ((1u8 << chan) - 1)).count_ones() as usize))
-                    })
-                } else {
-                    sig_lookup(&self.ex.input_sig, reg, chan)
+                let found = match self.ps_attrs.get(attr) {
+                    Some(&reg) => sig_lookup(&self.ex.input_sig, reg, chan),
+                    None => {
+                        let sysval_regs = distinct_regs(self.ex.input_sig.iter().filter(|e| matches!(e.sysval, 4 | 5) && e.rw_mask != 0));
+                        let reg = attr.checked_sub(self.ps_attrs.len()).and_then(|idx| sysval_regs.get(idx).copied());
+                        if let Some(reg) = reg {
+                            self.ex.input_sig.iter().enumerate().find_map(|(ei, e)| {
+                                (matches!(e.sysval, 4 | 5) && e.register == reg && (e.mask >> chan) & 1 != 0).then(|| (ei, (e.mask & ((1u8 << chan) - 1)).count_ones() as usize))
+                            })
+                        } else {
+                            None
+                        }
+                    }
                 };
                 let val = if let Some((ei, k)) = found {
                     let acc = format!("i.i{ei}.{}", XYZW[k]);
@@ -6370,7 +6368,7 @@ impl<'a> Emitter<'a> {
                 regs.dedup();
                 let first = if misc.is_empty() { 13 } else { 14 };
                 let Some(&reg) = regs.get(target.checked_sub(first).unwrap_or(u32::MAX) as usize) else {
-                    return Err(format!("position export {target} has no SV_ClipDistance/SV_CullDistance output register"));
+                    return Ok(());
                 };
                 for (ei, e) in osig.iter().enumerate() {
                     if matches!(e.sysval, 2 | 3) && e.register == reg {
