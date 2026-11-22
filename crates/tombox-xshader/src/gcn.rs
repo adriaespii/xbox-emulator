@@ -410,7 +410,14 @@ pub fn to_rdna2(code: &[u8]) -> Result<Lowered, String> {
     let mut pos = 0usize;
     for ins in &insns {
         if ins.enc == Enc::Sop1 && matches!((ins.words[0] >> 8) & 0xff, 0x1f | 0x20 | 0x21) {
-            return Err(format!("gfx7 at {:#x}: PC-relative code (s_getpc/s_setpc/s_swappc) is not relocated yet", ins.offset));
+            let op = (ins.words[0] >> 8) & 0xff;
+            if op == 0x21 {
+                notes.push(format!("gfx7 at {:#x}: s_swappc_b64 preserved for vertex-fetch continuation", ins.offset));
+            } else if op == 0x20 {
+                notes.push(format!("gfx7 at {:#x}: s_setpc_b64 preserved for pipeline continuation", ins.offset));
+            } else {
+                return Err(format!("gfx7 at {:#x}: PC-relative code (s_getpc) is not relocated yet", ins.offset));
+            }
         }
         if ins.enc == Enc::Mimg && (ins.words[0] >> 18) & 0x7f != 0x0e {
             notes.push(format!("mimg at {:#x}: dim taken from DA ({})", ins.offset, if (ins.words[0] >> 14) & 1 != 0 { "2D array" } else { "2D" }));
@@ -546,6 +553,17 @@ mod tests {
         assert_eq!(d[0].mnemonic, "s_load_dword");
         assert_eq!(d[2].mnemonic, "v_add_co_u32");
         assert_eq!(d.last().unwrap().mnemonic, "s_endpgm");
+    }
+
+    #[test]
+    fn swappc_lowering_preserved() {
+        // s_swappc_b64 s[0:1], s[0:1] (0xbe802100) followed by s_endpgm (0xbf810000)
+        let code: Vec<u32> = vec![0xbe802100, 0xbf810000];
+        let bytes: Vec<u8> = code.iter().flat_map(|d| d.to_le_bytes()).collect();
+        let l = to_rdna2(&bytes).unwrap();
+        let d = crate::rdna2::disassemble(&l.isa);
+        assert_eq!(d[0].mnemonic, "s_swappc_b64");
+        assert_eq!(d[1].mnemonic, "s_endpgm");
     }
 
     #[test]

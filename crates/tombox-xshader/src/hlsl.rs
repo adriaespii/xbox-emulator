@@ -94,7 +94,11 @@ float tb_cubesc(float x, float y, float z) { float ax = abs(x), ay = abs(y), az 
 float tb_cubetc(float x, float y, float z) { float ax = abs(x), ay = abs(y), az = abs(z); if (az >= ax && az >= ay) return -y; if (ay >= ax) return y < 0.0 ? -z : z; return -y; }
 float tb_cubeid(float x, float y, float z) { float ax = abs(x), ay = abs(y), az = abs(z); if (az >= ax && az >= ay) return z < 0.0 ? 5.0 : 4.0; if (ay >= ax) return y < 0.0 ? 3.0 : 2.0; return x < 0.0 ? 1.0 : 0.0; }
 float3 tb_cube_dir(float s, float t, float face) { float u = (s - 1.5) * 2.0, v = (t - 1.5) * 2.0; int f = (int)round(face); if (f == 0) return float3(1.0, -v, -u); if (f == 1) return float3(-1.0, -v, u); if (f == 2) return float3(u, 1.0, v); if (f == 3) return float3(u, -1.0, -v); if (f == 4) return float3(u, -v, 1.0); return float3(-u, -v, -1.0); }
+#if defined(__HLSL_VERSION) && __HLSL_VERSION >= 2021
 int tb_nrm(float v, uint k) { uint b = asuint(v); uint a = b & 0x7fffffffu; if (a < 0x30000000u) return 0; uint sh = 150u - (a >> 23); uint64_t p = (uint64_t)((a & 0x7fffffu) | 0x800000u) * (uint64_t)k; uint64_t q = p >> sh; uint64_t rem = p - (q << sh); uint64_t hf = ((uint64_t)1) << (sh - 1u); if (rem > hf || (rem == hf && (q & 1u) != 0u)) q += 1u; int r = (int)(uint)q; return (b >> 31) != 0u ? -r : r; }
+#else
+int tb_nrm(float v, uint k) { float x = v * (float)k; float a = abs(x); float r = floor(a); float f = a - r; if (f > 0.5 || (f == 0.5 && (((uint)r) & 1u) != 0u)) r += 1.0; int res = (int)r; return v < 0.0 ? -res : res; }
+#endif
 float tb_rev(float x) { return (abs(x) < 0.5) ? x : x - round(x); }
 float tb_ldexp32(float x, int e) { int k = clamp(e, -330, 330); return (float)((double)x * asdouble(0u, (uint)(k + 1023) << 20)); }
 float tb_rto(double s) { float f = (float)s; if ((double)f != s) { uint u = asuint(f); if (abs((double)f) > abs(s)) u -= 1u; f = asfloat(u | 1u); } return f; }
