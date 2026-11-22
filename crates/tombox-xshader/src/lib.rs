@@ -182,6 +182,12 @@ pub struct ShaderExtract {
     pub root_sig: Option<meta::RootSig>,
 }
 
+impl ShaderExtract {
+    pub fn is_durango(&self) -> bool {
+        crate::gcn::is_durango(&self.fssm)
+    }
+}
+
 /// RDNA2 SOPP opcodes we key on to locate/validate the ISA.
 const S_ENDPGM: u32 = 0xBF81_0000; // SOPP op=1
 const S_CODE_END: u32 = 0xBF9F_0000; // SOPP op=0x1f, used as code padding

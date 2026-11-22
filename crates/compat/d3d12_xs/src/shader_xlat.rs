@@ -412,8 +412,8 @@ fn write_atomic(p: &std::path::Path, data: &[u8]) {
 
 static PREWARMED: AtomicUsize = AtomicUsize::new(0);
 
-fn produce(blob: &[u8], hash: u64, rtfmt: &[u8; 8], _key: u64) -> Result<Vec<u8>, String> {
-    let r = std::panic::catch_unwind(|| translate_uncached(blob, hash, rtfmt)).unwrap_or_else(|_| Err("translator panicked".to_string()));
+fn produce_with_root(blob: &[u8], hash: u64, rtfmt: &[u8; 8], _key: u64, root: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    let r = std::panic::catch_unwind(|| translate_uncached_with(blob, hash, rtfmt, None, root)).unwrap_or_else(|_| Err("translator panicked".to_string()));
     if let Ok(v) = &r {
         crate::dbcount::note_translated(v, blob, hash, rtfmt);
         let sp = src_path(hash, rtfmt);
@@ -422,6 +422,10 @@ fn produce(blob: &[u8], hash: u64, rtfmt: &[u8; 8], _key: u64) -> Result<Vec<u8>
         }
     }
     r
+}
+
+fn produce(blob: &[u8], hash: u64, rtfmt: &[u8; 8], key: u64) -> Result<Vec<u8>, String> {
+    produce_with_root(blob, hash, rtfmt, key, None)
 }
 
 fn cell(key: u64) -> Arc<OnceLock<Cached>> {
@@ -569,24 +573,34 @@ fn helper_pool() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 }
 
 pub unsafe fn prefetch(ptr: *const u8, len: usize, rtfmt: [u8; 8]) -> bool {
+    prefetch_with_root(ptr, len, rtfmt, None)
+}
+
+pub unsafe fn prefetch_with_root(ptr: *const u8, len: usize, rtfmt: [u8; 8], root: Option<&[u8]>) -> bool {
     if ptr.is_null() || len < 32 || len > 0x40_0000 {
         return false;
     }
     let blob = core::slice::from_raw_parts(ptr, len);
     let hash = fnv1a(blob);
-    let key = cache_key(hash, &rtfmt);
+    let root_tag = root.map(fnv1a).unwrap_or(0);
+    let key = cache_key(if root_tag != 0 { hash ^ root_tag.rotate_left(13) } else { hash }, &rtfmt);
     let c = cell(key);
     if c.get().is_some() {
         return false;
     }
     let blob = Arc::new(blob.to_vec());
+    let root_owned = root.map(|r| r.to_vec());
     let job: Job = Box::new(move || {
-        c.get_or_init(|| crate::perf::timed(crate::perf::SHADER, || finish(produce(&blob, hash, &rtfmt, key), hash, blob.len(), &blob)));
+        c.get_or_init(|| crate::perf::timed(crate::perf::SHADER, || finish(produce_with_root(&blob, hash, &rtfmt, key, root_owned.as_deref()), hash, blob.len(), &blob)));
     });
     helper_pool().lock().unwrap_or_else(|e| e.into_inner()).send(job).is_ok()
 }
 
 pub unsafe fn translate_for_targets(ptr: *const u8, len: usize, rtfmt: [u8; 8]) -> Cached {
+    translate_for_targets_with_root(ptr, len, rtfmt, None)
+}
+
+pub unsafe fn translate_for_targets_with_root(ptr: *const u8, len: usize, rtfmt: [u8; 8], root: Option<&[u8]>) -> Cached {
     if ptr.is_null() || len < 32 || len > 0x40_0000 {
         return Err(Arc::new(format!("bad shader blob ({ptr:p}, {len})")));
     }
@@ -594,7 +608,8 @@ pub unsafe fn translate_for_targets(ptr: *const u8, len: usize, rtfmt: [u8; 8]) 
     let blob = core::slice::from_raw_parts(ptr, len);
     let hash = fnv1a(blob);
     let fmt_key = rtfmt.iter().any(|&k| k != 0);
-    let key = cache_key(hash, &rtfmt);
+    let root_tag = root.map(fnv1a).unwrap_or(0);
+    let key = cache_key(if root_tag != 0 { hash ^ root_tag.rotate_left(13) } else { hash }, &rtfmt);
     let c = cell(key);
     if let Some(hit) = c.get() {
         return hit.clone();
@@ -606,7 +621,7 @@ pub unsafe fn translate_for_targets(ptr: *const u8, len: usize, rtfmt: [u8; 8]) 
         }
     }
     let t0 = std::time::Instant::now();
-    let entry = c.get_or_init(|| crate::perf::timed(crate::perf::SHADER, || finish(produce(blob, hash, &rtfmt, key), hash, len, blob))).clone();
+    let entry = c.get_or_init(|| crate::perf::timed(crate::perf::SHADER, || finish(produce_with_root(blob, hash, &rtfmt, key, root), hash, len, blob))).clone();
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     if ms > 1.0 {
         BLOCKED_US.fetch_add((ms * 1000.0) as u64, Ordering::Relaxed);

@@ -705,9 +705,15 @@ unsafe extern "system" fn create_gfx_pso_x(
     };
     let ps_opts = if _pext.is_null() || _num_ext == 0 { None } else { crate::pso_ext::ps::options_in_entries(unsafe { core::slice::from_raw_parts(_pext, _num_ext as usize * crate::pso_ext::EXT_STRIDE) }, _num_ext as usize) };
     let mut ps_origin: Option<crate::pso_ext::ps::PsOrigin> = None;
+    let root = rd(&desc, 0) as *mut c_void;
+    let root_bytes = if !root.is_null() {
+        crate::console_slots_mesh::root_data(root)
+    } else {
+        None
+    };
     let stages = [("VS", 0x08usize), ("PS", 0x18), ("DS", 0x28), ("HS", 0x38), ("GS", 0x48)];
     for &(stage, off) in stages.iter().filter(|&&(_, o)| rd(&desc, o) != 0 && rd(&desc, o + 8) != 0).skip(1) {
-        unsafe { crate::shader_xlat::prefetch(rd(&desc, off) as *const u8, rd(&desc, off + 8) as usize, stage_rtfmt(stage, &desc)) };
+        unsafe { crate::shader_xlat::prefetch_with_root(rd(&desc, off) as *const u8, rd(&desc, off + 8) as usize, stage_rtfmt(stage, &desc), root_bytes.as_deref()) };
     }
     for (stage, off) in stages {
         let (p, n) = (rd(&desc, off) as *const u8, rd(&desc, off + 8) as usize);
@@ -715,7 +721,7 @@ unsafe extern "system" fn create_gfx_pso_x(
             continue;
         }
         let rtfmt = stage_rtfmt(stage, &desc);
-        match unsafe { crate::shader_xlat::translate_for_targets(p, n, rtfmt) } {
+        match unsafe { crate::shader_xlat::translate_for_targets_with_root(p, n, rtfmt, root_bytes.as_deref()) } {
             Ok(code) => {
                 let code = if stage == "PS" {
                     ps_origin = crate::pso_ext::ps::origin_from_blob(p, n, rtfmt, ps_opts.unwrap_or_default());
@@ -1287,9 +1293,15 @@ unsafe extern "system" fn create_compute_pso_x(
         let root = unsafe { root_from_shaders(real, &desc, &[8]) };
         desc[0..8].copy_from_slice(&(root as u64).to_le_bytes());
     }
+    let root = u64::from_le_bytes(desc[0..8].try_into().unwrap()) as *mut c_void;
+    let root_bytes = if !root.is_null() {
+        crate::console_slots_mesh::root_data(root)
+    } else {
+        None
+    };
     let p = u64::from_le_bytes(desc[8..16].try_into().unwrap()) as *const u8;
     let n = u64::from_le_bytes(desc[16..24].try_into().unwrap()) as usize;
-    let code = match unsafe { crate::shader_xlat::translate(p, n) } {
+    let code = match unsafe { crate::shader_xlat::translate_for_targets_with_root(p, n, [0; 8], root_bytes.as_deref()) } {
         Ok(c) => c,
         Err(e) => {
             if FAIL.fetch_add(1, Ordering::Relaxed) < 6 {

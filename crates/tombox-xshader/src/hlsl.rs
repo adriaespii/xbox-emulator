@@ -1070,6 +1070,14 @@ impl<'a> Emitter<'a> {
         if let Some(b) = self.user_base_override {
             return b;
         }
+        if self.ex.is_durango() {
+            let chained = self.insns.iter().take(16).find(|i| i.mnemonic == "s_swappc_b64").and_then(|i| match i.dst.first() {
+                Some(Opnd::Sgpr(n)) if *n == 0 => Some(2),
+                Some(Opnd::Sgpr(n)) if *n >= 8 => Some(*n as usize + 7),
+                _ => None,
+            });
+            return if self.is_cs { 0 } else { chained.unwrap_or(0) };
+        }
         let chained = self.insns.iter().take(16).find(|i| i.mnemonic == "s_swappc_b64").and_then(|i| match i.dst.first() {
             Some(Opnd::Sgpr(n)) if *n >= 8 => Some(*n as usize + 7),
             _ => None,
@@ -1882,8 +1890,39 @@ impl<'a> Emitter<'a> {
                     let n = 1u32 << ins.op;
                     let b = ins.src.first().and_then(sg).ok_or("s_load: bad base")?;
                     let d = ins.dst.first().and_then(sg).ok_or("s_load: bad dst")?;
+                    let bsym = sym.get(&b).copied().or_else(|| (!written.contains(&b)).then_some(Sym::Table(b as u8)));
+                    if let Some(cands) = self.desc_candidates(bsym.as_ref(), 32) {
+                        let dynamic = (ins.raw.get(1).copied().unwrap_or(0) >> 25) != 0x7d;
+                        let end = if dynamic { 4096 * 4 } else { ins.aux.imm as u32 / 4 + n };
+                        let mut out: Vec<(u32, Res)> = Vec::new();
+                        let buffer_kind = if cands.len() == 1 { self.table_kind_for(cands[0].0, false).filter(|k| *k <= 1) } else { None };
+                        for (table, off) in &cands {
+                            let slot = self.bind_id(*table, *off, 32);
+                            if let Some(k) = buffer_kind {
+                                let key = (k == 1, slot);
+                                let e = self.sbuf.entry(key).or_insert(0);
+                                *e = (*e).max(4);
+                                self.sbuf_flat.insert(key);
+                                out.push((((*table as u32) << 24) | off, Res::Buf(slot, k == 1)));
+                                continue;
+                            }
+                            let e = self.cb_size.entry(slot).or_insert(0);
+                            *e = (*e).max(end);
+                            out.push((((*table as u32) << 24) | off, Res::Cb(slot)));
+                        }
+                        self.res.insert(idx, vec![out[0].1]);
+                        if out.len() > 1 {
+                            self.bsel.insert(idx, (b, out));
+                        }
+                        for k in 0..n {
+                            sym.remove(&(d + k as u16));
+                            written.insert(d + k as u16);
+                        }
+                        continue;
+                    }
                     let table = match sym.get(&b) {
                         Some(Sym::Table(t)) => *t,
+                        Some(Sym::Desc { table: pt, .. }) => *pt,
                         None if !written.contains(&b) => b as u8,
                         other => {
                             return Err(format!(
@@ -3340,10 +3379,12 @@ impl<'a> Emitter<'a> {
                     if self.emit_rm_load(idx, ins)?.is_some() {
                         return Ok(());
                     }
-                    self.line("// (descriptor fetch from root table — resolved statically)");
-                    return Ok(());
+                    if !matches!(self.res.get(&idx).and_then(|v| v.first()), Some(Res::Cb(_)) | Some(Res::Buf(..))) {
+                        self.line("// (descriptor fetch from root table — resolved statically)");
+                        return Ok(());
+                    }
                 }
-                let n = 1u32 << (ins.op - 8);
+                let n = 1u32 << (if ins.op <= 4 { ins.op } else { ins.op - 8 });
                 let base = sreg_num(&d.ok_or("no dst")?).ok_or("bad dst")?;
                 let soff = ins.raw.get(1).copied().unwrap_or(0) >> 25;
                 match soff {

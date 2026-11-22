@@ -298,3 +298,112 @@ fn loops_translate_deterministically() {
         assert!(translate(&ex).expect("translate").hlsl == first, "translation differs between runs");
     }
 }
+
+fn durango_fssm() -> Vec<u8> {
+    let mut b = vec![0u8; 0x50];
+    b[0..8].copy_from_slice(&0x50u64.to_le_bytes());
+    b[0x18..0x1c].copy_from_slice(&5u32.to_le_bytes());
+    b[0x28..0x30].copy_from_slice(&0x40u64.to_le_bytes());
+    b
+}
+
+#[test]
+fn durango_pixel_shader_user_base_0_and_cbv_load() {
+    let root = Some(RootSig {
+        version: 2,
+        flags: 1,
+        params: vec![
+            RootParam {
+                visibility: 5,
+                kind: RootParamKind::Constants { register: 0, space: 0, num32: 2 },
+            },
+            RootParam {
+                visibility: 5,
+                kind: RootParamKind::Descriptor { kind: 2, register: 0, space: 0 },
+            },
+            table(0, 64, 5),
+        ],
+        num_static_samplers: 0,
+    });
+    let words = [
+        0xf408_0201, // s_load_dwordx4 s8, s2 (s[2:3]) [off=0]: root CBV b0
+        0xfa00_0000,
+        0x7e00_0208, // v_mov_b32 v0, s8
+        0x7e02_0209, // v_mov_b32 v1, s9
+        PACK_V0_V2_V2,
+        PACK_V1_V2_V2,
+        EXP_MRT0_COMPR[0],
+        EXP_MRT0_COMPR[1],
+        S_ENDPGM,
+    ];
+    let mut ex = shader(Stage::Pixel, &words, vec![], vec![sig("SV_Target", 64, 3, 0, 0xf)], root);
+    ex.fssm = durango_fssm();
+    assert!(ex.is_durango());
+    let t = translate(&ex).expect("translate durango pixel shader");
+    assert!(t.hlsl.contains("cb0[0]"), "HLSL does not contain cb0[0]:\n{}", t.hlsl);
+}
+
+#[test]
+fn durango_vertex_shader_swappc_user_base_2() {
+    let root = Some(RootSig {
+        version: 2,
+        flags: 1,
+        params: vec![
+            RootParam {
+                visibility: 1,
+                kind: RootParamKind::Descriptor { kind: 2, register: 0, space: 0 },
+            },
+        ],
+        num_static_samplers: 0,
+    });
+    let words = [
+        0xbe80_2100, // s_swappc_b64 s[0:1], s[0:1]
+        0xf408_0101, // s_load_dwordx4 s4, s2 (s[2:3]) [off=0]: root CBV b0
+        0xfa00_0000,
+        0x7e00_0204, // v_mov_b32 v0, s4
+        0xf800_08cf, // exp pos0 v0, v0, v0, v0 (done)
+        0x0000_0000,
+        S_ENDPGM,
+    ];
+    let mut ex = shader(Stage::Vertex, &words, vec![], vec![sig("SV_Position", 1, 3, 0, 0xf)], root);
+    ex.fssm = durango_fssm();
+    assert!(ex.is_durango());
+    let t = translate(&ex).expect("translate durango vertex shader with swappc");
+    assert!(t.hlsl.contains("cb0[0]"), "HLSL does not contain cb0[0]:\n{}", t.hlsl);
+}
+
+#[test]
+fn durango_cbv_loaded_from_descriptor_table() {
+    let root = Some(RootSig {
+        version: 2,
+        flags: 1,
+        params: vec![
+            RootParam {
+                visibility: 1,
+                kind: RootParamKind::Table(vec![RootRange {
+                    range_type: 2,
+                    num: 16,
+                    base_register: 0,
+                    space: 0,
+                    offset_in_table: 0,
+                }]),
+            },
+        ],
+        num_static_samplers: 0,
+    });
+    let words = [
+        0xf404_0080, // s_load_dwordx2 s2, s0 (s[0:1]) [off=0]: CBV descriptor from table 0
+        0xfa00_0000,
+        0xf408_0101, // s_load_dwordx4 s4, s2 (s[2:3]) [off=0]: constant buffer data from CBV
+        0xfa00_0000,
+        0x7e00_0204, // v_mov_b32 v0, s4
+        0xf800_08cf, // exp pos0 v0, v0, v0, v0 (done)
+        0x0000_0000,
+        S_ENDPGM,
+    ];
+    let mut ex = shader(Stage::Vertex, &words, vec![], vec![sig("SV_Position", 1, 3, 0, 0xf)], root);
+    ex.fssm = durango_fssm();
+    assert!(ex.is_durango());
+    let t = translate(&ex).expect("translate durango cbv loaded from table");
+    assert!(t.hlsl.contains("cb0[0]"), "HLSL does not contain cb0[0]:\n{}", t.hlsl);
+}
