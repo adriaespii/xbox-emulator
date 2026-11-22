@@ -190,22 +190,22 @@ pub unsafe extern "system" fn application_operations_end_handler(_session: usize
 }
 
 pub unsafe extern "system" fn package_mount_hold_handler(session: usize, request: *mut c_void, response: *mut c_void) -> HRESULT {
-    let mut hr = match application_path(request) {
-        Ok(()) => S_OK,
-        Err(e) => e,
-    };
-    if hr >= 0 {
+    let result = mount_result(request);
+    if result == HR_FILE_NOT_FOUND {
         let mut msg = Com::null();
-        hr = XbtpCreateMessage(&IID_XBTP_MESSAGE_IMPL, msg.out());
+        let mut hr = XbtpCreateMessage(&IID_XBTP_MESSAGE_IMPL, msg.out());
         if hr >= 0 {
             hr = serialize_impl(&MsgResponse { result: HR_FILE_NOT_FOUND }, msg.0);
         }
         if hr >= 0 {
             let s = session as *mut c_void;
-            hr = if s.is_null() { E_INVALIDARG } else { (vt::<SessionVtbl>(s).send_more_message)(s, msg.0) };
+            if s.is_null() {
+                return reply_result(E_INVALIDARG, response);
+            }
+            let _ = (vt::<SessionVtbl>(s).send_more_message)(s, msg.0);
         }
     }
-    reply_result(hr, response)
+    reply_result(result, response)
 }
 
 pub unsafe extern "system" fn get_storage_device_free_space_handler(_session: usize, request: *mut c_void, response: *mut c_void) -> HRESULT {

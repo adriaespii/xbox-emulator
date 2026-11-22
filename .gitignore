@@ -28,3 +28,6 @@ emulator/
 *.xvc.*
 *.part
 *.crdownload
+
+instalar_compilador_c++.cmd
+
