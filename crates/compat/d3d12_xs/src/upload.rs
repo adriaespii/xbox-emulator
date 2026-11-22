@@ -399,10 +399,12 @@ pub extern "system" fn TomboxNoteTitleMemory(addr: usize, len: usize, kind: u32)
     if let Some(last) = g.last_mut() {
         if last.2 == kind && last.0 + last.1 == addr {
             last.1 += len;
+            mark_pending();
             return;
         }
     }
     g.push((addr, len, kind));
+    mark_pending();
 }
 
 fn take_notes() -> Vec<(usize, usize, u32)> {
@@ -892,8 +894,51 @@ pub fn direct_queue() -> Option<*mut c_void> {
     DIRECT_QUEUES.lock().unwrap_or_else(|e| e.into_inner()).first().copied().map(|q| q as *mut c_void)
 }
 
-/// Called once per `PresentX`, on the presenting thread, before the frame is copied out.
+pub fn unregister_direct_queue(queue: *mut c_void) {
+    DIRECT_QUEUES.lock().unwrap_or_else(|e| e.into_inner()).retain(|&q| q != queue as usize);
+}
+
+static HAS_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn has_pending() -> bool {
+    HAS_PENDING.load(core::sync::atomic::Ordering::Acquire)
+}
+
+pub fn mark_pending() {
+    HAS_PENDING.store(true, core::sync::atomic::Ordering::Release);
+}
+
+pub fn has_notes() -> bool {
+    NOTES.lock().map(|g| !g.is_empty()).unwrap_or(false)
+}
+
+static PUMP_LOCK: Mutex<()> = Mutex::new(());
+
+pub unsafe fn pump_if_needed(queue: *mut c_void) {
+    if !has_pending() || queue.is_null() {
+        return;
+    }
+    let target = if is_direct_queue(queue) {
+        Some(queue)
+    } else {
+        direct_queue()
+    };
+    let Some(q) = target else { return };
+    if q.is_null() {
+        return;
+    }
+    let _lock = PUMP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !has_pending() {
+        return;
+    }
+    pump_locked(q);
+}
 pub unsafe fn pump(queue: *mut c_void) {
+    let _lock = PUMP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    pump_locked(queue);
+}
+
+unsafe fn pump_locked(queue: *mut c_void) {
     let t0 = std::time::Instant::now();
     pump_inner(queue);
     let us = t0.elapsed().as_micros() as u64;
@@ -1146,6 +1191,10 @@ unsafe fn pump_inner(queue: *mut c_void) {
             up.pumps, staged.len(), up.tracked.len(), up.uploaded_subs, up.uploaded_bytes, up.unreadable, up.rejected, crate::cmdlist_wrap::inserted_hits(), crate::cmdlist_wrap::flush_hits(), up.recommitted,
             up.reaper.pending(), up.reaper.freed(), up.reaper.worst_us() as f64 / 1000.0));
     }
+    let any_fresh = up.tracked.iter().any(|t| t.hashes.iter().any(|h| h.is_none()));
+    if up.backlog.is_empty() && !crate::placed::has_new() && !has_notes() && !any_fresh {
+        HAS_PENDING.store(false, core::sync::atomic::Ordering::Release);
+    }
 }
 
 #[cfg(test)]
@@ -1305,11 +1354,92 @@ mod direct_queue_and_pending_tests {
 
     #[test]
     fn direct_queue_registration_and_detection() {
-        let fake_q = 0xdead_beefusize as *mut c_void;
+        let fake_q = 0xdead_bee0usize as *mut c_void;
         assert!(!is_direct_queue(fake_q));
         register_direct_queue(fake_q);
         assert!(is_direct_queue(fake_q));
         assert!(!is_direct_queue((fake_q as usize + 8) as *mut c_void));
         assert!(direct_queue().is_some());
+        unregister_direct_queue(fake_q);
+    }
+
+    #[test]
+    fn pending_work_detects_notes_and_placed() {
+        let _ = take_notes();
+        assert!(!has_notes());
+        TomboxNoteTitleMemory(0x1000, 0x100, NOTE_WRITTEN);
+        assert!(has_notes());
+        assert!(has_pending());
+        let _ = take_notes();
+        assert!(!has_notes());
+    }
+
+    #[test]
+    fn pump_if_needed_on_null_queue_is_safe() {
+        unsafe { pump_if_needed(core::ptr::null_mut()) };
+    }
+
+    unsafe extern "system" fn mock_fence_val(_this: *mut c_void) -> u64 { 0 }
+
+    #[test]
+    fn racing_threads_do_not_double_submit() {
+        struct SyncFence(*mut c_void);
+        unsafe impl Send for SyncFence {}
+        unsafe impl Sync for SyncFence {}
+        static FENCE: std::sync::OnceLock<SyncFence> = std::sync::OnceLock::new();
+        let fence = FENCE.get_or_init(|| {
+            let vt = Box::leak(Box::new([mock_fence_val as usize; 16]));
+            let obj = Box::leak(Box::new(vt.as_ptr()));
+            SyncFence(obj as *mut *const usize as *mut c_void)
+        }).0;
+
+        let dummy = Uploader {
+            reaper: crate::reaper::Reaper::new(|| 0, |_| {}),
+            device: core::ptr::null_mut(),
+            alloc: core::ptr::null_mut(),
+            list: core::ptr::null_mut(),
+            fence,
+            fence_value: 0,
+            tracked: Vec::new(),
+            retire: Vec::new(),
+            pool: Vec::new(),
+            pool_bytes: 0,
+            backlog: std::collections::VecDeque::new(),
+            release_cursor: 0,
+            cursor: 0,
+            partial_cursor: 0,
+            pumps: 0,
+            uploaded_subs: 0,
+            uploaded_bytes: 0,
+            unreadable: 0,
+            rejected: 0,
+            recommitted: 0,
+            zero_cursor: 0,
+            zero_filled: 0,
+            watch_changed: 0,
+            index: Vec::new(),
+            index_stale: false,
+            ev: EventStats::default(),
+            cost_sum_us: 0,
+            cost_max_us: 0,
+            cost_n: 0,
+        };
+        *UP.lock().unwrap() = Some(dummy);
+
+        let fake_q = 0x5555_6666usize as *mut c_void;
+        register_direct_queue(fake_q);
+        mark_pending();
+        assert!(has_pending());
+
+        let q1 = fake_q as usize;
+        let q2 = fake_q as usize;
+        let t1 = std::thread::spawn(move || unsafe { pump_if_needed(q1 as *mut c_void) });
+        let t2 = std::thread::spawn(move || unsafe { pump_if_needed(q2 as *mut c_void) });
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert!(!has_pending());
+        let pumps = UP.lock().unwrap().as_ref().map(|u| u.pumps).unwrap_or(0);
+        assert_eq!(pumps, 1);
     }
 }

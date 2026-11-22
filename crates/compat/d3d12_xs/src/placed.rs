@@ -76,10 +76,15 @@ pub fn register(res: *mut c_void, p: Placed) {
     }
     REG.lock().unwrap().get_or_insert_with(HashMap::new).insert(res as usize, p.clone());
     NEW.lock().unwrap().push((res as usize, p));
+    crate::upload::mark_pending();
 }
 
 pub fn drain_new() -> Vec<(usize, Placed)> {
     core::mem::take(&mut *NEW.lock().unwrap())
+}
+
+pub fn has_new() -> bool {
+    NEW.lock().map(|g| !g.is_empty()).unwrap_or(false)
 }
 
 pub fn forget(res: *mut c_void) {
