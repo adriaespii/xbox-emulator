@@ -638,3 +638,51 @@ fn image_get_lod_reads_both_lods() {
         &["tex0.CalculateLevelOfDetail(samp0, float2(asfloat(v1), asfloat(v2)))", "tex0.CalculateLevelOfDetailUnclamped(samp0,"],
     );
 }
+
+#[test]
+fn flat_global_scratch_offset_bit_widths() {
+    let flat_cases = [(0u32, 0i64), (100, 100), (2047, 2047), (2048, 2048), (4095, 4095)];
+    for &(off, expected) in &flat_cases {
+        let w = [0xdc00_0000 | (0x10 << 18) | (0 << 14) | (off & 0xfff), 0];
+        let bytes: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let insns = disassemble(&bytes);
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].aux.imm, expected);
+        assert_eq!(insns[0].aux.mask, 0);
+    }
+    let global_cases = [
+        (0i32, 0i64),
+        (100, 100),
+        (2047, 2047),
+        (2048, 2048),
+        (4095, 4095),
+        (-1, -1),
+        (-100, -100),
+        (-2048, -2048),
+        (-2049, -2049),
+        (-4096, -4096),
+    ];
+    for &(off, expected) in &global_cases {
+        let w = [0xdc00_0000 | (0x1c << 18) | (2 << 14) | (off as u32 & 0x1fff), 0];
+        let bytes: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let insns = disassemble(&bytes);
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].aux.imm, expected);
+        assert_eq!(insns[0].aux.mask, 2);
+    }
+    let scratch_cases = [
+        (0i32, 0i64),
+        (2048, 2048),
+        (4095, 4095),
+        (-1, -1),
+        (-4096, -4096),
+    ];
+    for &(off, expected) in &scratch_cases {
+        let w = [0xdc00_0000 | (0x1c << 18) | (1 << 14) | (off as u32 & 0x1fff), 0];
+        let bytes: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let insns = disassemble(&bytes);
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].aux.imm, expected);
+        assert_eq!(insns[0].aux.mask, 1);
+    }
+}
