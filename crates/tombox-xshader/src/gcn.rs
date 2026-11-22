@@ -682,7 +682,11 @@ pub fn extract_durango(
     let d = parse(blob)?;
     let lowered = lower(&d.code, &d.data)?;
     let body = |cc: &[u8; 4]| container.chunk(cc).map(|c| &dxbc[c.offset..c.offset + c.size]);
-    let sig = |a: &[u8; 4], b: &[u8; 4]| body(a).or_else(|| body(b)).and_then(|x| crate::meta::parse_signature(x).ok()).unwrap_or_default();
+    let sig = |a: &[u8; 4], b: &[u8; 4]| {
+        body(a).and_then(|x| crate::meta::parse_signature(a, x).ok())
+            .or_else(|| body(b).and_then(|x| crate::meta::parse_signature(b, x).ok()))
+            .unwrap_or_default()
+    };
     Ok(crate::ShaderExtract {
         stage,
         shader_model,

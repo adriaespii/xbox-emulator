@@ -325,3 +325,27 @@ fn pixel_attribute_past_the_interpolants_reads_the_layer_sysval() {
     let t = translate(&ex).expect("v_interp_mov of the layer attribute translates");
     assert!(t.hlsl.contains("(uint)(i.i1.x)"), "{}", t.hlsl);
 }
+
+#[test]
+fn durango_vertex_fetch_call_synthesizes_attributes_from_input_signature() {
+    let words = [0xbe80_2100, 0xf800_00cf, 0x0706_0504, S_ENDPGM];
+    let pos_in = sig("POSITION", 0, 3, 0, 0xf);
+    let color_in = sig("COLOR", 0, 3, 1, 0xf);
+    let pos_out = sig("SV_Position", 1, 3, 0, 0xf);
+    let mut ex = shader(Stage::Vertex, &words, vec![pos_in, color_in], vec![pos_out], None);
+
+    let mut durango_blob = vec![0u8; 72];
+    durango_blob[0..8].copy_from_slice(&72u64.to_le_bytes());
+    durango_blob[0x18..0x1c].copy_from_slice(&5u32.to_le_bytes());
+    durango_blob[0x28..0x30].copy_from_slice(&64u64.to_le_bytes());
+    ex.fssm = durango_blob;
+
+    let t = translate(&ex).expect("Durango vertex shader with s_swappc translates");
+    assert!(t.hlsl.contains("struct SIn {"), "Missing SIn:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("float4 i0 : POSITION0;"), "Missing POSITION0:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("float4 i1 : COLOR0;"), "Missing COLOR0:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("v4 = asuint(i.i0.x);"), "Missing v4 init:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("v7 = asuint(i.i0.w);"), "Missing v7 init:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("v8 = asuint(i.i1.x);"), "Missing v8 init:\n{}", t.hlsl);
+    assert!(t.hlsl.contains("v11 = asuint(i.i1.w);"), "Missing v11 init:\n{}", t.hlsl);
+}
